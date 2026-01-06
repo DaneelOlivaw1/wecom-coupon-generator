@@ -15,6 +15,40 @@
         <button onclick="copyCouponCode()" style="margin: 0;">复制兑换码</button>
         <button onclick="copyMessage()" style="margin: 0;">复制兑换码（带话术）</button>
     </div>
+
+    <hr style="margin: 0;">
+    <small>手动绑定用户</small>
+    <br>
+    <input type="text" id="emailInput" placeholder="请输入邮箱" style="margin: 0; width: 200px;">
+    <button id="bindBtn" onclick="bindUser()" style="margin: 0;">绑定</button>
+
+    <div id="userInfo" style="display: none;">
+        <hr style="margin: 0;">
+        <b>用户信息</b>
+        <br>
+        <div id="wechatInfo" style="display: none;">
+            <img id="wechatAvatar" style="width: 30px; height: 30px;">
+            <span id="wechatNickname"></span>
+            <br>
+        </div>
+        <small>ID:</small> <code id="userId"></code>
+        <button onclick="copyUserId()" style="margin: 0; font-size: 10px;">复制</button>
+        <br>
+        <small>邮箱:</small> <span id="userEmail"></span>
+        <button onclick="copyUserEmail()" style="margin: 0; font-size: 10px;">复制</button>
+        <br>
+        <small>余额:</small> ¥<span id="balance"></span>
+        <br>
+        <small>赠送余额:</small> ¥<span id="bonusBalance"></span>
+        <br>
+        <small>API密钥上限:</small> <span id="maxApiKeys"></span>
+        <br>
+        <b>24小时消费</b>
+        <br>
+        <small>总消费:</small> <b>¥<span id="totalSpent"></span></b>
+        <br>
+        <div id="modelStats" style="font-size: 12px;"></div>
+    </div>
     <hr style="margin: 0;">
 
     <script src="https://assets.weibanzhushou.com/web/we-work-webapp/weiban-client-js-sdk.0.1.876a06f63c3f.js"></script>
@@ -31,7 +65,41 @@
                 code: searchParams.get('code'),
                 origin: searchParams.get('origin')
             };
+
+            // 页面加载时自动查询用户信息
+            if (urlParams.code) {
+                checkUserInfo();
+            }
         };
+
+        // 查询用户信息
+        async function checkUserInfo() {
+            try {
+                const response = await fetch('/api/get-user-info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: urlParams.code })
+                });
+
+                const data = await response.json();
+
+                if (data.errcode === 0 && data.data.has_coupon) {
+                    // 已有兑换码，显示按钮和用户信息
+                    currentCouponCode = data.data.code;
+                    currentMessage = generateMessage(data.data.code);
+
+                    document.getElementById('result').style.display = 'block';
+                    document.getElementById('createBtn').style.display = 'none';
+
+                    if (data.data.user_info) {
+                        displayUserInfo(data.data.user_info);
+                    }
+                }
+                // 如果没有兑换码，按钮保持显示状态
+            } catch (error) {
+                console.error('查询用户信息失败:', error);
+            }
+        }
 
         // 生成话术
         function generateMessage(code) {
@@ -43,13 +111,58 @@
 如果您在体验过程中有任何问题请随时联系我！`;
         }
 
+        // 显示用户信息
+        function displayUserInfo(userInfo) {
+            if (!userInfo) return;
+
+            const userInfoDiv = document.getElementById('userInfo');
+            const wechatInfo = document.getElementById('wechatInfo');
+
+            // 显示用户基本信息
+            document.getElementById('userId').textContent = userInfo.user.id;
+            document.getElementById('userEmail').textContent = userInfo.user.email;
+            document.getElementById('balance').textContent = userInfo.user.balance_cny || '0.00';
+            document.getElementById('bonusBalance').textContent = userInfo.user.total_bonus_balance_cny || '0.00';
+            document.getElementById('maxApiKeys').textContent = userInfo.user.max_api_keys || 5;
+
+            // 显示微信信息（如果有）
+            if (userInfo.user.wechat_nickname || userInfo.user.wechat_avatar) {
+                if (userInfo.user.wechat_avatar) {
+                    document.getElementById('wechatAvatar').src = userInfo.user.wechat_avatar;
+                    document.getElementById('wechatAvatar').style.display = 'inline';
+                }
+                if (userInfo.user.wechat_nickname) {
+                    document.getElementById('wechatNickname').textContent = userInfo.user.wechat_nickname;
+                }
+                wechatInfo.style.display = 'block';
+            }
+
+            // 显示24小时消费统计
+            document.getElementById('totalSpent').textContent = userInfo.stats_24h.total_spent;
+
+            const modelStatsDiv = document.getElementById('modelStats');
+            modelStatsDiv.innerHTML = '';
+
+            if (userInfo.stats_24h.models.length > 0) {
+                userInfo.stats_24h.models.forEach(model => {
+                    const modelDiv = document.createElement('div');
+                    modelDiv.innerHTML = `<small>${model.model_name}: ${model.call_count}次, 均价¥${model.avg_price}, 小计¥${model.total_amount}</small><br>`;
+                    modelStatsDiv.appendChild(modelDiv);
+                });
+            } else {
+                modelStatsDiv.innerHTML = '<small>暂无消费记录</small><br>';
+            }
+
+            userInfoDiv.style.display = 'block';
+        }
+
         // 创建兑换码
         async function createCoupon() {
             const btn = document.getElementById('createBtn');
             const result = document.getElementById('result');
 
             if (!urlParams || !urlParams.code) {
-                alert('无法获取用户信息');
+                wb.showDialog('toast', 'error', '无法获取用户信息');
                 return;
             }
 
@@ -70,13 +183,18 @@
                     currentMessage = generateMessage(data.data.code);
                     result.style.display = 'block';
                     btn.style.display = 'none';
+
+                    // 显示用户信息（如果已兑换）
+                    if (data.data.user_info) {
+                        displayUserInfo(data.data.user_info);
+                    }
                 } else {
-                    alert(data.errmsg || '生成失败');
+                    wb.showDialog('toast', 'error', data.errmsg || '生成失败');
                     btn.disabled = false;
                     btn.textContent = '添加企业微信奖励';
                 }
             } catch (error) {
-                alert('网络错误');
+                wb.showDialog('toast', 'error', '网络错误');
                 btn.disabled = false;
                 btn.textContent = '添加企业微信奖励';
             }
@@ -119,6 +237,94 @@
                 document.execCommand('copy');
                 document.body.removeChild(textarea);
                 wb.showDialog('toast', 'success', '已复制话术');
+            }
+        }
+
+        // 手动绑定用户
+        async function bindUser() {
+            const emailInput = document.getElementById('emailInput');
+            const bindBtn = document.getElementById('bindBtn');
+            const email = emailInput.value.trim();
+
+            if (!email) {
+                wb.showDialog('toast', 'error', '请输入邮箱');
+                return;
+            }
+
+            if (!urlParams || !urlParams.code) {
+                wb.showDialog('toast', 'error', '无法获取用户信息');
+                return;
+            }
+
+            bindBtn.disabled = true;
+            bindBtn.textContent = '绑定中...';
+
+            try {
+                const response = await fetch('/api/bind-user', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        code: urlParams.code,
+                        email: email
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.errcode === 0) {
+                    wb.showDialog('toast', 'success', '绑定成功');
+                    emailInput.value = '';
+
+                    // 显示用户信息
+                    if (data.data.user_info) {
+                        displayUserInfo(data.data.user_info);
+                    }
+                } else {
+                    wb.showDialog('toast', 'error', data.errmsg || '绑定失败');
+                }
+            } catch (error) {
+                wb.showDialog('toast', 'error', '网络错误');
+            } finally {
+                bindBtn.disabled = false;
+                bindBtn.textContent = '绑定';
+            }
+        }
+
+        // 复制用户ID
+        async function copyUserId() {
+            const userId = document.getElementById('userId').textContent;
+            try {
+                await navigator.clipboard.writeText(userId);
+                wb.showDialog('toast', 'success', '已复制ID');
+            } catch (err) {
+                const textarea = document.createElement('textarea');
+                textarea.value = userId;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                wb.showDialog('toast', 'success', '已复制ID');
+            }
+        }
+
+        // 复制用户邮箱
+        async function copyUserEmail() {
+            const userEmail = document.getElementById('userEmail').textContent;
+            try {
+                await navigator.clipboard.writeText(userEmail);
+                wb.showDialog('toast', 'success', '已复制邮箱');
+            } catch (err) {
+                const textarea = document.createElement('textarea');
+                textarea.value = userEmail;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                wb.showDialog('toast', 'success', '已复制邮箱');
             }
         }
     </script>

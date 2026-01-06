@@ -180,6 +180,158 @@ app.get('/api/health', async (req, res) => {
 });
 
 /**
+ * 查询企微用户对应的平台用户信息
+ */
+app.post('/api/get-user-info', async (req, res) => {
+    const { code } = req.body;
+
+    if (!code) {
+        return res.status(400).json({
+            errcode: 40001,
+            errmsg: '缺少code参数'
+        });
+    }
+
+    try {
+        // 1. 获取企业微信用户信息
+        const userInfo = await getWeibanUserInfo(code);
+        const { external_user_id } = userInfo;
+
+        if (!external_user_id) {
+            return res.status(400).json({
+                errcode: 40002,
+                errmsg: '无法获取企业微信用户ID'
+            });
+        }
+
+        // 2. 查询该企微用户的兑换码
+        const couponResult = await db.query(
+            'SELECT code FROM coupons WHERE wecom_external_user_id = $1',
+            [external_user_id]
+        );
+
+        if (couponResult.rows.length === 0) {
+            // 未生成兑换码
+            return res.json({
+                errcode: 0,
+                errmsg: 'ok',
+                data: {
+                    has_coupon: false,
+                    user_info: null
+                }
+            });
+        }
+
+        // 3. 查询用户详细信息
+        const couponCode = couponResult.rows[0].code;
+        const userDetailInfo = await getUserInfoByCouponCode(couponCode);
+
+        res.json({
+            errcode: 0,
+            errmsg: 'ok',
+            data: {
+                has_coupon: true,
+                code: couponCode,
+                user_info: userDetailInfo
+            }
+        });
+
+    } catch (error) {
+        console.error('✗ 查询用户信息失败:', error);
+        res.status(500).json({
+            errcode: -1,
+            errmsg: '查询失败',
+            error: error.message
+        });
+    }
+});
+
+/**
+ * 手动绑定用户
+ * 请求参数: { code: "企业微信code", email: "用户邮箱" }
+ */
+app.post('/api/bind-user', async (req, res) => {
+    const { code, email } = req.body;
+
+    if (!code || !email) {
+        return res.status(400).json({
+            errcode: 40001,
+            errmsg: '缺少必要参数'
+        });
+    }
+
+    try {
+        // 1. 获取企业微信用户信息
+        console.log('→ 获取企微用户信息...');
+        const userInfo = await getWeibanUserInfo(code);
+        const { external_user_id } = userInfo;
+
+        if (!external_user_id) {
+            return res.status(400).json({
+                errcode: 40002,
+                errmsg: '无法获取企业微信用户ID'
+            });
+        }
+
+        console.log(`✓ 企微用户ID: ${external_user_id}`);
+
+        // 2. 查询邮箱对应的用户
+        console.log(`→ 查询邮箱: ${email}`);
+        const userResult = await db.query(
+            'SELECT id, email FROM users WHERE email = $1',
+            [email]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.json({
+                errcode: 40004,
+                errmsg: '用户不存在'
+            });
+        }
+
+        const user = userResult.rows[0];
+        console.log(`✓ 找到用户: ${user.id}`);
+
+        // 3. 检查该用户是否已绑定其他企微
+        if (user.wecom_external_user_id && user.wecom_external_user_id !== external_user_id) {
+            console.log(`✗ 用户已绑定其他企微: ${user.wecom_external_user_id}`);
+            return res.json({
+                errcode: 40005,
+                errmsg: '该用户已绑定其他企业微信'
+            });
+        }
+
+        // 4. 更新用户的 wecom_external_user_id
+        console.log('→ 绑定企微用户...');
+        await db.query(
+            'UPDATE users SET wecom_external_user_id = $1 WHERE email = $2',
+            [external_user_id, email]
+        );
+
+        console.log('✓ 绑定成功');
+
+        // 5. 返回用户信息
+        const boundUserInfo = await getUserInfoByCouponCode(null, external_user_id);
+
+        res.json({
+            errcode: 0,
+            errmsg: 'ok',
+            data: {
+                user_info: boundUserInfo
+            }
+        });
+
+    } catch (error) {
+        console.error('✗ 绑定用户失败:', error);
+        res.status(500).json({
+            errcode: -1,
+            errmsg: '绑定失败',
+            error: error.message
+        });
+    }
+});
+
+/**
  * 创建兑换码
  * 请求参数: { code: "企业微信code" }
  */
@@ -218,13 +370,18 @@ app.post('/api/create-coupon', async (req, res) => {
         if (checkResult.rows.length > 0) {
             const existingCoupon = checkResult.rows[0];
             console.log(`✗ 用户已生成过兑换码: ${existingCoupon.code}`);
+
+            // 查询用户详细信息
+            const redemptionInfo = await getUserInfoByCouponCode(existingCoupon.code);
+
             return res.json({
                 errcode: 40003,
                 errmsg: '您已经生成过兑换码了',
                 data: {
                     code: existingCoupon.code,
                     created_at: existingCoupon.created_at,
-                    already_exists: true
+                    already_exists: true,
+                    user_info: redemptionInfo
                 }
             });
         }
@@ -267,6 +424,9 @@ app.post('/api/create-coupon', async (req, res) => {
         const newCoupon = insertResult.rows[0];
         console.log(`✓ 兑换码生成成功: ${newCoupon.code}`);
 
+        // 查询是否已被兑换
+        const redemptionInfo = await getUserInfoByCouponCode(newCoupon.code);
+
         res.json({
             errcode: 0,
             errmsg: 'ok',
@@ -276,7 +436,8 @@ app.post('/api/create-coupon', async (req, res) => {
                 amount: newCoupon.amount_cny,
                 created_at: newCoupon.created_at,
                 description: '新用户添加企业微信奖励',
-                already_exists: false
+                already_exists: false,
+                user_info: redemptionInfo
             }
         });
 
@@ -289,6 +450,100 @@ app.post('/api/create-coupon', async (req, res) => {
         });
     }
 });
+
+/**
+ * 查询兑换码对应的用户信息
+ * @param {string} couponCode - 兑换码（可选）
+ * @param {string} wecomUserId - 企微用户ID（可选）
+ */
+async function getUserInfoByCouponCode(couponCode = null, wecomUserId = null) {
+    try {
+        let wecomExternalUserId = wecomUserId;
+
+        // 如果提供了兑换码，先通过兑换码查询 wecom_external_user_id
+        if (couponCode && !wecomUserId) {
+            const couponResult = await db.query(
+                `SELECT wecom_external_user_id FROM coupons WHERE code = $1`,
+                [couponCode]
+            );
+
+            if (couponResult.rows.length === 0 || !couponResult.rows[0].wecom_external_user_id) {
+                return null; // 兑换码不存在或未兑换
+            }
+
+            wecomExternalUserId = couponResult.rows[0].wecom_external_user_id;
+        }
+
+        // 如果没有 wecom_external_user_id，返回 null
+        if (!wecomExternalUserId) {
+            return null;
+        }
+
+        // 2. 查询用户信息
+        const userResult = await db.query(
+            `SELECT id, email, balance_cny, total_bonus_balance_cny, max_api_keys,
+                    wechat_nickname, wechat_avatar, wechat_bound_at
+             FROM users
+             WHERE wecom_external_user_id = $1`,
+            [wecomExternalUserId]
+        );
+
+        if (userResult.rows.length === 0) {
+            return null; // 未兑换
+        }
+
+        const user = userResult.rows[0];
+
+        // 3. 统计最近24小时消费（UTC时区）
+        const statsResult = await db.query(
+            `SELECT
+                model_name,
+                COUNT(*) as call_count,
+                AVG(amount) as avg_price,
+                SUM(amount) as total_amount
+             FROM balance_transactions
+             WHERE user_id = $1
+               AND created_at >= timezone('UTC', now()) - INTERVAL '24 hours'
+               AND transaction_status = 'completed'
+               AND type = 'consume'
+               AND amount > 0
+             GROUP BY model_name
+             ORDER BY total_amount DESC`,
+            [user.id]
+        );
+
+        // 4. 计算总消费
+        const totalSpent = statsResult.rows.reduce((sum, row) =>
+            sum + parseFloat(row.total_amount), 0
+        );
+
+        return {
+            user: {
+                id: user.id,
+                email: user.email,
+                balance_cny: parseFloat(user.balance_cny).toFixed(2),
+                total_bonus_balance_cny: parseFloat(user.total_bonus_balance_cny).toFixed(2),
+                max_api_keys: user.max_api_keys,
+                wechat_nickname: user.wechat_nickname,
+                wechat_avatar: user.wechat_avatar,
+                wechat_bound_at: user.wechat_bound_at
+            },
+            stats_24h: {
+                models: statsResult.rows.map(row => ({
+                    model_name: row.model_name,
+                    call_count: parseInt(row.call_count),
+                    avg_price: parseFloat(row.avg_price).toFixed(2),
+                    total_amount: parseFloat(row.total_amount).toFixed(2)
+                })),
+                total_spent: totalSpent.toFixed(2)
+            }
+        };
+
+    } catch (error) {
+        console.error('✗ 查询用户信息失败:', error);
+        throw error;
+    }
+}
 
 // ============================================
 // HTTPS服务器启动
