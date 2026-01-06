@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>兑换码生成器</title>
+</head>
+<body style="margin: 0; padding: 0;">
+    <hr style="margin: 0;">
+    添加企微奖励
+    <br>
+    <button id="createBtn" onclick="createCoupon()" style="margin: 0;">添加企业微信奖励</button>
+
+    <div id="result" style="display: none;">
+        <button onclick="copyCouponCode()" style="margin: 0;">复制兑换码</button>
+        <button onclick="copyMessage()" style="margin: 0;">复制兑换码（带话术）</button>
+    </div>
+    <hr style="margin: 0;">
+
+    <script src="https://assets.weibanzhushou.com/web/we-work-webapp/weiban-client-js-sdk.0.1.876a06f63c3f.js"></script>
+
+    <script>
+        let urlParams = null;
+        let currentCouponCode = null;
+        let currentMessage = null;
+
+        window.onload = function() {
+            const searchParams = new URLSearchParams(window.location.search);
+            urlParams = {
+                corp_id: searchParams.get('corp_id'),
+                code: searchParams.get('code'),
+                origin: searchParams.get('origin')
+            };
+        };
+
+        // 生成话术
+        function generateMessage(code) {
+            return `欢迎添加我们的企业微信！
+
+添加企业微信奖励：${code}
+在https://aicodewith.com/dashboard/redeem这里兑换
+
+如果您在体验过程中有任何问题请随时联系我！`;
+        }
+
+        // 创建兑换码
+        async function createCoupon() {
+            const btn = document.getElementById('createBtn');
+            const result = document.getElementById('result');
+
+            if (!urlParams || !urlParams.code) {
+                alert('无法获取用户信息');
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = '生成中...';
+
+            try {
+                const response = await fetch('/api/create-coupon', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: urlParams.code })
+                });
+
+                const data = await response.json();
+
+                if (data.errcode === 0 || data.errcode === 40003) {
+                    currentCouponCode = data.data.code;
+                    currentMessage = generateMessage(data.data.code);
+                    result.style.display = 'block';
+                    btn.style.display = 'none';
+                } else {
+                    alert(data.errmsg || '生成失败');
+                    btn.disabled = false;
+                    btn.textContent = '添加企业微信奖励';
+                }
+            } catch (error) {
+                alert('网络错误');
+                btn.disabled = false;
+                btn.textContent = '添加企业微信奖励';
+            }
+        }
+
+        // 复制兑换码
+        async function copyCouponCode() {
+            if (!currentCouponCode) return;
+
+            try {
+                await navigator.clipboard.writeText(currentCouponCode);
+                wb.showDialog('toast', 'success', '已复制: ' + currentCouponCode);
+            } catch (err) {
+                const textarea = document.createElement('textarea');
+                textarea.value = currentCouponCode;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                wb.showDialog('toast', 'success', '已复制: ' + currentCouponCode);
+            }
+        }
+
+        // 复制话术
+        async function copyMessage() {
+            if (!currentMessage) return;
+
+            try {
+                await navigator.clipboard.writeText(currentMessage);
+                wb.showDialog('toast', 'success', '已复制话术');
+            } catch (err) {
+                const textarea = document.createElement('textarea');
+                textarea.value = currentMessage;
+                textarea.style.position = 'fixed';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                wb.showDialog('toast', 'success', '已复制话术');
+            }
+        }
+    </script>
+</body>
+</html>
